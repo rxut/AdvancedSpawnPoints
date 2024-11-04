@@ -7,6 +7,8 @@ Add ServerPackages=AdvancedSpawnPoints in your main Server UnrealTournament.ini
 Add AdvancedSpawnPoints.ASPMutator to your mutator list 
 
 Default and recommended mutator settings are:
+
+```
 [AdvancedSpawnPoints.ASPMutator]
 bEnabled=True
 bDebugMode=False
@@ -19,5 +21,6 @@ bSafeSpawns=True
 SpawnRecentPenalty=0.5
 SpawnNearLastPenalty=1.5
 SpawnRelevantDistance=4000
+```
 
 The code for this mutator is based on Random Spawn Location by MrLoathsome and UTPureDP custom spawn algorithm by Max]I[muS-X
