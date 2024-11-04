@@ -1,4 +1,4 @@
-# AdvancedSpawnPoints
+# AdvancedSpawnPoints for UT99
 This is a Mutator for Unreal Tournament (1999) that improves the logic of player spawn points and customization options to avoid respawns in front of enemy players.
 
 **Installation**
