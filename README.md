@@ -2,11 +2,10 @@
 This is a Mutator for Unreal Tournament (1999) that improves the logic of player spawn points and customization options to avoid respawns in front of enemy players.
 
 **Installation**
-```
-Add ServerPackages=AdvancedSpawnPoints in your main Server UnrealTournament.ini
 
-Add AdvancedSpawnPoints.ASPMutator to your mutator list 
-```
+- Add ServerPackages=AdvancedSpawnPoints in your main Server UnrealTournament.ini
+
+- Add AdvancedSpawnPoints.ASPMutator to your mutator list 
 
 Default and recommended mutator settings are:
 
