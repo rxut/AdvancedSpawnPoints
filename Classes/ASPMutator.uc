@@ -1,4 +1,4 @@
-﻿//*  Advanced Spawn Points TDM UT99 Mutator                                                                       *//
+//*  Advanced Spawn Points TDM UT99 Mutator                                                                       *//
 //*  Based on code from Random Spawn Location by MrLoathsome and UTPureDP custom spawn algorithm by Max]I[muS-X   *//
 //*  bAdvancedSpawns helps to reduce respawn rates close to enemy players                                         *//
 
@@ -6,12 +6,15 @@ class ASPMutator expands Mutator config(AdvancedSpawnPoints);
 
 var config float CollisionDist, MinSpawnDistance, MinSpawnZVariance, SpawnLOSPenalty, DefaultSpawnWeight, SpawnRelevantDistance;
 var config bool bEnabled, bAdvancedSpawns, bSafeSpawns,bDebugMode;
+var config int MaxSpawnRetries;  // Add maximum retries config
 var int NumValidSpawns;
 var Vector ValidSpawns[64];
 var Rotator ValidSpawnsRotation[64];
 var Vector LastStartSpot;
 var Vector PlayerLastStartSpot2[32];
 var Vector PlayerLastStartSpot3[32];
+var Vector RecentGlobalSpawns[8];  // Track the last 8 spawn locations globally
+var int CurrentGlobalSpawnIndex;
 var config float SpawnRecentPenalty;
 var config float SpawnNearLastPenalty;
 
@@ -30,6 +33,13 @@ function PostBeginPlay()
         log("AdvancedSpawnPoints Mutator is disabled. Exiting...");
         return;
     }
+
+    // Sanity check configuration values
+    if (MinSpawnDistance < 0) MinSpawnDistance = 1200;
+    if (SpawnLOSPenalty < 0) SpawnLOSPenalty = 2;
+    if (DefaultSpawnWeight < 0) DefaultSpawnWeight = 2000;
+    if (CollisionDist < 0) CollisionDist = 128;
+    if (MaxSpawnRetries < 1) MaxSpawnRetries = 3;
 
     foreach AllActors(class'PlayerStart', PS)
     {
@@ -50,6 +60,7 @@ function ModifyPlayer(Pawn Other)
     local UTTeleportEffect TelEff;
     local Vector SpawnLoc;
     local Rotator SpawnRot;
+    local int RetryCount;
 
     Super.ModifyPlayer(Other);
 
@@ -58,17 +69,18 @@ function ModifyPlayer(Pawn Other)
 
     if (Other.IsA('Bot')) // Do not modify bot spawns
         {
-            log("This was a bot. Exiting...");
+            if (bDebugMode)
+                log("This was a bot. Exiting...");
             return;
         }
         
     if (bAdvancedSpawns)
     {
-        FindPlayerStartAdvanced(Other, SpawnLoc, SpawnRot, Other.PlayerReplicationInfo.Team);
-
-        if (LastStartSpot == SpawnLoc) {
-                FindPlayerStartAdvanced(Other, SpawnLoc, SpawnRot, Other.PlayerReplicationInfo.Team);
-        }
+        RetryCount = 0;
+        do {
+            FindPlayerStartAdvanced(Other, SpawnLoc, SpawnRot, Other.PlayerReplicationInfo.Team);
+            RetryCount++;
+        } until (LastStartSpot != SpawnLoc || RetryCount >= MaxSpawnRetries);
     }
     else
     {
@@ -100,11 +112,13 @@ function bool FindPlayerStartAdvanced(Pawn Player, out Vector SpawnLoc, out Rota
     local byte Team;
     local bool bInvalid, bLineOfSight, bIsRelevantDist, bIsMinZVariance;
     local int i, CurrentScore, BestScore, StartScore, TeamSizes[2];
-    local float CollisionDist, PlayerDist, SpawnDist, EnemyZVariance, MinEnemyDist;
+    local float PlayerDist, SpawnDist, EnemyZVariance, MinEnemyDist;
     local Vector Best;
     local Pawn OtherPlayer;
     local PlayerReplicationInfo PRI;
     local int RandomIndex;
+    local TournamentPlayer TPlayer;
+    local int j;
 
     if (Player != None && Player.PlayerReplicationInfo != None)
         Team = Player.PlayerReplicationInfo.Team;
@@ -118,6 +132,8 @@ function bool FindPlayerStartAdvanced(Pawn Player, out Vector SpawnLoc, out Rota
     Best = ValidSpawns[Rand(NumValidSpawns)];
 
     // Calculate team sizes
+    TeamSizes[0] = 0;
+    TeamSizes[1] = 0;
     for (OtherPlayer = Level.PawnList; OtherPlayer != None; OtherPlayer = OtherPlayer.NextPawn) {
         PRI = OtherPlayer.PlayerReplicationInfo;
         if (PRI != None && PRI.Team < 2) {
@@ -133,21 +149,35 @@ function bool FindPlayerStartAdvanced(Pawn Player, out Vector SpawnLoc, out Rota
         CurrentScore = StartScore;
         MinEnemyDist = 100000;
 
-        if (Player.IsA('TournamentPlayer') && TournamentPlayer(Player).StartSpot != None) {
-            if (ValidSpawns[i] == TournamentPlayer(Player).StartSpot.Location) {
+        // Check against recent global spawns to prevent simultaneous spawning at the same spot
+        for (j = 0; j < 8; j++) {
+            if (RecentGlobalSpawns[j] != vect(0,0,0) && VSize(ValidSpawns[i] - RecentGlobalSpawns[j]) < CollisionDist) {
+                bInvalid = True;
+                break;
+            }
+        }
+        
+        if (bInvalid) continue;
+
+        TPlayer = TournamentPlayer(Player);
+        if (TPlayer != None && TPlayer.StartSpot != None) {
+            if (ValidSpawns[i] == TPlayer.StartSpot.Location) {
                 bInvalid = True;
                 continue;
-            } else {
-                // Recent spawn penalty
-                if (ValidSpawns[i] == PlayerLastStartSpot2[Player.PlayerReplicationInfo.PlayerID] || ValidSpawns[i] == PlayerLastStartSpot3[Player.PlayerReplicationInfo.PlayerID]) {
+            }
+            
+            // Safely access player history arrays
+            if (Player.PlayerReplicationInfo != None && Player.PlayerReplicationInfo.PlayerID < 32) {
+                if (ValidSpawns[i] == PlayerLastStartSpot2[Player.PlayerReplicationInfo.PlayerID] || 
+                    ValidSpawns[i] == PlayerLastStartSpot3[Player.PlayerReplicationInfo.PlayerID]) {
                     CurrentScore *= SpawnRecentPenalty;
                 }
-                
-                // Spawn distance penalty
-                SpawnDist = VSize(TournamentPlayer(Player).StartSpot.Location - ValidSpawns[i]);
-                if (SpawnDist < SpawnRelevantDistance) {
-                    CurrentScore -= (SpawnDist * SpawnNearLastPenalty);
-                }
+            }
+            
+            // Spawn distance penalty
+            SpawnDist = VSize(TPlayer.StartSpot.Location - ValidSpawns[i]);
+            if (SpawnDist < SpawnRelevantDistance) {
+                CurrentScore -= (SpawnDist * SpawnNearLastPenalty);
             }
         }
 
@@ -202,11 +232,22 @@ function bool FindPlayerStartAdvanced(Pawn Player, out Vector SpawnLoc, out Rota
             SpawnLoc = ValidSpawns[RandomIndex];
             SpawnRot = ValidSpawnsRotation[RandomIndex];
             LastStartSpot = SpawnLoc;
+            
+            // Update global spawn history even for random spawns
+            RecentGlobalSpawns[CurrentGlobalSpawnIndex] = SpawnLoc;
+            CurrentGlobalSpawnIndex = (CurrentGlobalSpawnIndex + 1) % 8;
+            
             return false;
         }
 
-    PlayerLastStartSpot3[Player.PlayerReplicationInfo.PlayerID] = PlayerLastStartSpot2[Player.PlayerReplicationInfo.PlayerID];
-    PlayerLastStartSpot2[Player.PlayerReplicationInfo.PlayerID] = TournamentPlayer(Player).StartSpot.Location;
+    // Update global spawn history
+    RecentGlobalSpawns[CurrentGlobalSpawnIndex] = SpawnLoc;
+    CurrentGlobalSpawnIndex = (CurrentGlobalSpawnIndex + 1) % 8;
+
+    if (Player.PlayerReplicationInfo != None && Player.PlayerReplicationInfo.PlayerID < 32) {
+        PlayerLastStartSpot3[Player.PlayerReplicationInfo.PlayerID] = PlayerLastStartSpot2[Player.PlayerReplicationInfo.PlayerID];
+        PlayerLastStartSpot2[Player.PlayerReplicationInfo.PlayerID] = TPlayer.StartSpot.Location;
+    }
 
     return true;
 }
@@ -225,4 +266,5 @@ defaultproperties
     SpawnRecentPenalty=0.5
     SpawnNearLastPenalty=1.5
     SpawnRelevantDistance=4000
+    MaxSpawnRetries=3
 }
