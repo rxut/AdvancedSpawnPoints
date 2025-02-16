@@ -4,19 +4,24 @@
 
 class ASPMutator expands Mutator config(AdvancedSpawnPoints);
 
-var config float CollisionDist, MinSpawnDistance, MinSpawnZVariance, SpawnLOSPenalty, DefaultSpawnWeight, SpawnRelevantDistance;
+var config float MinSpawnDistance, MinSpawnZVariance, SpawnLOSPenalty, DefaultSpawnWeight, SpawnRelevantDistance;
+var float CollisionDist;
 var config bool bEnabled, bAdvancedSpawns, bSafeSpawns,bDebugMode;
-var config int MaxSpawnRetries;  // Add maximum retries config
+var config int MaxSpawnRetries;
 var int NumValidSpawns;
 var Vector ValidSpawns[64];
 var Rotator ValidSpawnsRotation[64];
 var Vector LastStartSpot;
 var Vector PlayerLastStartSpot2[32];
 var Vector PlayerLastStartSpot3[32];
+var Vector PlayerLastStartSpot4[32];
 var Vector RecentGlobalSpawns[8];  // Track the last 8 spawn locations globally
 var int CurrentGlobalSpawnIndex;
 var config float SpawnRecentPenalty;
 var config float SpawnNearLastPenalty;
+var Vector BestSpawnLoc;  // Ttrack best spawn across retries
+var Rotator BestSpawnRot;
+var float GlobalBestScore;
 
 function PostBeginPlay()
 {
@@ -76,11 +81,38 @@ function ModifyPlayer(Pawn Other)
         
     if (bAdvancedSpawns)
     {
+        GlobalBestScore = 0;
         RetryCount = 0;
-        do {
+        
+        // Keep trying until we find a good spawn or run out of retries
+        while (RetryCount < MaxSpawnRetries) {
+            if (bDebugMode)
+                Other.ClientMessage("Attempt" @ RetryCount + 1 @ "to find spawn point");
+                
             FindPlayerStartAdvanced(Other, SpawnLoc, SpawnRot, Other.PlayerReplicationInfo.Team);
+            
+            // If we found a good spawn (score > 1500 is considered "good"), stop trying
+            if (GlobalBestScore > 1500) {
+                if (bDebugMode)
+                    Other.ClientMessage("Found good spawn point with score" @ GlobalBestScore @ ", stopping search");
+                break;
+            }
+            
             RetryCount++;
-        } until (LastStartSpot != SpawnLoc || RetryCount >= MaxSpawnRetries);
+        }
+        
+        // Use the best spawn found across attempts
+        if (GlobalBestScore > 0) {
+            SpawnLoc = BestSpawnLoc;
+            SpawnRot = BestSpawnRot;
+            LastStartSpot = BestSpawnLoc;
+        } else {
+            // Fallback to random if no good spawns found
+            if (bDebugMode)
+                Other.ClientMessage("No good spawns found across" @ RetryCount @ "attempts, using random");
+            SpawnLoc = ValidSpawns[Rand(NumValidSpawns)];
+            SpawnRot = ValidSpawnsRotation[Rand(NumValidSpawns)];
+        }
     }
     else
     {
@@ -169,7 +201,8 @@ function bool FindPlayerStartAdvanced(Pawn Player, out Vector SpawnLoc, out Rota
             // Safely access player history arrays
             if (Player.PlayerReplicationInfo != None && Player.PlayerReplicationInfo.PlayerID < 32) {
                 if (ValidSpawns[i] == PlayerLastStartSpot2[Player.PlayerReplicationInfo.PlayerID] || 
-                    ValidSpawns[i] == PlayerLastStartSpot3[Player.PlayerReplicationInfo.PlayerID]) {
+                    ValidSpawns[i] == PlayerLastStartSpot3[Player.PlayerReplicationInfo.PlayerID] ||
+                    ValidSpawns[i] == PlayerLastStartSpot4[Player.PlayerReplicationInfo.PlayerID]) {
                     CurrentScore *= SpawnRecentPenalty;
                 }
             }
@@ -191,21 +224,38 @@ function bool FindPlayerStartAdvanced(Pawn Player, out Vector SpawnLoc, out Rota
                     break;
                 }
 
-                bIsRelevantDist = (PlayerDist < MinSpawnDistance);
-                EnemyZVariance = OtherPlayer.Location.Z - ValidSpawns[i].Z;
+                bIsRelevantDist = (PlayerDist < SpawnRelevantDistance);
+                EnemyZVariance = Abs(OtherPlayer.Location.Z - ValidSpawns[i].Z);
                 bIsMinZVariance = (EnemyZVariance <= MinSpawnZVariance);
                 bLineOfSight = FastTrace(ValidSpawns[i], OtherPlayer.Location);
 
                 if (OtherPlayer.PlayerReplicationInfo.Team != Team) {
-                    if (PlayerDist < MinSpawnDistance && (!bIsMinZVariance || bLineOfSight)) {
+                    if (PlayerDist < MinSpawnDistance && (bIsMinZVariance || bLineOfSight)) {
                         bInvalid = True;
-                        break;                    }
-                    if (bSafeSpawns && !bIsMinZVariance && bIsRelevantDist) {
-                        PlayerDist = MinSpawnDistance - PlayerDist;
-                        if (bLineOfSight)
-                            CurrentScore -= (PlayerDist * SpawnLOSPenalty);
-                        else
-                            CurrentScore -= PlayerDist;
+                        if (bDebugMode)
+                            Player.ClientMessage("Invalid spawn" @ i @ ". Enemy" @ OtherPlayer.PlayerReplicationInfo.PlayerName @ "within" @ PlayerDist @ "units. Same Z-Level:" @ bIsMinZVariance @". Has Line of Sight: " @ bLineOfSight @ "");
+                        break;
+                    }
+                    // If in safe mode, be more strict about spawn safety
+                    if (bSafeSpawns) {
+                        // Only invalidate if within MinSpawnDistance and too close vertically
+                        if (PlayerDist < MinSpawnDistance && bIsMinZVariance) {
+                            bInvalid = True;
+                            if (bDebugMode)
+                                Player.ClientMessage("Invalid spawn" @ i @ "due to safe mode: Enemy" @ OtherPlayer.PlayerReplicationInfo.PlayerName @ "within" @ PlayerDist @ "units on same Z-level");
+                            break;
+                        }
+                        // Apply penalties for relevant distance spawns
+                        if (bIsRelevantDist) {
+                            PlayerDist = MinSpawnDistance - PlayerDist;
+                            // Additional penalty if on same vertical level
+                            if (bIsMinZVariance)
+                                CurrentScore -= (PlayerDist * 2);
+                            if (bLineOfSight)
+                                CurrentScore -= (PlayerDist * SpawnLOSPenalty);
+                            else
+                                CurrentScore -= PlayerDist;
+                        }
                     }
                 }
                 if (PlayerDist < MinEnemyDist) MinEnemyDist = PlayerDist;
@@ -214,37 +264,53 @@ function bool FindPlayerStartAdvanced(Pawn Player, out Vector SpawnLoc, out Rota
 
         if (!bInvalid) {
             if (bSafeSpawns) CurrentScore += MinEnemyDist;
-            CurrentScore = Rand(Max(DefaultSpawnWeight + CurrentScore, 0));
+            // Add small random factor to break ties
+            CurrentScore = Max(DefaultSpawnWeight + CurrentScore, 0) + (FRand() * 100);
             if (CurrentScore > BestScore) {
                 BestScore = CurrentScore;
                 SpawnLoc = ValidSpawns[i];
                 SpawnRot = ValidSpawnsRotation[i];
                 LastStartSpot = ValidSpawns[i];
+                if (bDebugMode)
+                    Player.ClientMessage("Found spawn" @ i @ "with score" @ CurrentScore @ "(Distance to nearest enemy:" @ MinEnemyDist @ ")");
+            }
+            // Track best spawn across all retry attempts
+            if (CurrentScore > GlobalBestScore) {
+                GlobalBestScore = CurrentScore;
+                BestSpawnLoc = SpawnLoc;
+                BestSpawnRot = SpawnRot;
+                if (bDebugMode)
+                    Player.ClientMessage("New best spawn overall with score" @ CurrentScore);
             }
         } else {
+            if (bDebugMode)
+                Player.ClientMessage("Spawn" @ i @ "invalid");
             continue;
         }
     }
 
-    if (BestScore <= 0)
-        {
-            RandomIndex = Rand(NumValidSpawns);
-            SpawnLoc = ValidSpawns[RandomIndex];
-            SpawnRot = ValidSpawnsRotation[RandomIndex];
-            LastStartSpot = SpawnLoc;
-            
-            // Update global spawn history even for random spawns
-            RecentGlobalSpawns[CurrentGlobalSpawnIndex] = SpawnLoc;
-            CurrentGlobalSpawnIndex = (CurrentGlobalSpawnIndex + 1) % 8;
-            
-            return false;
-        }
+    // If no valid spawns found with positive score, then randomly select one as fallback
+    if (BestScore <= 0) {
+        if (bDebugMode)
+            Player.ClientMessage("No valid spawns found, using random fallback");
+        RandomIndex = Rand(NumValidSpawns);
+        SpawnLoc = ValidSpawns[RandomIndex];
+        SpawnRot = ValidSpawnsRotation[RandomIndex];
+        LastStartSpot = SpawnLoc;
+        
+        // Update global spawn history even for random spawns
+        RecentGlobalSpawns[CurrentGlobalSpawnIndex] = SpawnLoc;
+        CurrentGlobalSpawnIndex = (CurrentGlobalSpawnIndex + 1) % 8;
+        
+        return false;
+    }
 
     // Update global spawn history
     RecentGlobalSpawns[CurrentGlobalSpawnIndex] = SpawnLoc;
     CurrentGlobalSpawnIndex = (CurrentGlobalSpawnIndex + 1) % 8;
 
     if (Player.PlayerReplicationInfo != None && Player.PlayerReplicationInfo.PlayerID < 32) {
+        PlayerLastStartSpot4[Player.PlayerReplicationInfo.PlayerID] = PlayerLastStartSpot3[Player.PlayerReplicationInfo.PlayerID];
         PlayerLastStartSpot3[Player.PlayerReplicationInfo.PlayerID] = PlayerLastStartSpot2[Player.PlayerReplicationInfo.PlayerID];
         PlayerLastStartSpot2[Player.PlayerReplicationInfo.PlayerID] = TPlayer.StartSpot.Location;
     }
@@ -258,7 +324,7 @@ defaultproperties
     bEnabled=True
     bDebugMode=False
     MinSpawnDistance=1200
-    MinSpawnZVariance=-190
+    MinSpawnZVariance=190
     SpawnLOSPenalty=2
     DefaultSpawnWeight=2000
     bAdvancedSpawns=True
