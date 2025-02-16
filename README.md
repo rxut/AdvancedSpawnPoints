@@ -10,11 +10,11 @@ This is a Mutator for Unreal Tournament (1999) that improves the logic of player
 Default and recommended mutator settings are:
 
 ```
-[AdvancedSpawnPoints.ASPMutator]
+[AdvancedSpawnPoints-main.ASPMutator]
 bEnabled=True
 bDebugMode=False
 MinSpawnDistance=1200
-MinSpawnZVariance=-190
+MinSpawnZVariance=190
 SpawnLOSPenalty=2
 DefaultSpawnWeight=2000
 bAdvancedSpawns=True
@@ -22,6 +22,7 @@ bSafeSpawns=True
 SpawnRecentPenalty=0.5
 SpawnNearLastPenalty=1.5
 SpawnRelevantDistance=4000
+MaxSpawnRetries=3
 ```
 
 The code for this mutator is based on Random Spawn Location by MrLoathsome and UTPureDP custom spawn algorithm by Max]I[muS-X
